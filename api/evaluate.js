@@ -36,8 +36,11 @@ async function resolveMeta(meta) {
   const byId = Object.fromEntries(cls.students.filter(s => s.name).map(s => [s.id, s]));
   if (!ids.every(id => byId[id])) return { error: "Niektorý člen nie je v zozname triedy.", status: 400 };
 
-  const link = typeof meta.link === "string" && /^https:\/\//i.test(meta.link.trim())
-    ? meta.link.trim().slice(0, 300) : "";
+  // Odkaz na súbory na Google Drive je povinný (https://drive.google.com/…, docs.google.com/…)
+  const link = typeof meta.link === "string" ? meta.link.trim().slice(0, 300) : "";
+  if (!/^https:\/\/([a-z0-9-]+\.)*google\.com\//i.test(link)) {
+    return { error: "Vlož odkaz na svoje súbory na Google Drive (začína https://drive.google.com/…).", status: 400 };
+  }
 
   // Roly členov tímu (voliteľné, napr. "bubeník") — len pre členov tímu, krátke texty
   const roles = {};
