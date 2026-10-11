@@ -1261,6 +1261,11 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
         alert("Pri tímovej práci označ aspoň jedného spolupracovníka — alebo prepni na samostatnú prácu.");
         return;
       }
+      if(!/^https:\/\/([a-z0-9-]+\.)*google\.com\//i.test(link)) {
+        alert("Vlož odkaz na svoje súbory na Google Drive (povinné) — začína https://drive.google.com/…");
+        document.getElementById('inp-link')?.focus();
+        return;
+      }
       const memberIds = [me.id, ...(state.isTeam ? state.partnerIds : [])];
       const names = me.name;
       const mbrs = state.isTeam ? state.partnerIds.map(id => (studentById(id) || {}).name).filter(Boolean).join(', ') : '';
