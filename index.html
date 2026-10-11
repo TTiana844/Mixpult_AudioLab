@@ -257,12 +257,12 @@
 </head>
 <body>
 
-  <h2 class="sr-only">Audio Lab — Mixpult úlohy v2</h2>
+  <h2 class="sr-only">Mixpult AudioLab  v3</h2>
 
   <div class="hero-band">
     <div class="hero-top">
       <div>
-        <div class="hero-eyebrow"> SPŠJM 2567 Multimédiá AVT Ing. Tatiana Vráblová</div>
+        <div class="hero-eyebrow">SPŠJM 2567 Multimédiá AVT 4. ročník Ing. Tatiana Vráblová</div>
         <h1 class="hero-h">Audio Lab: Mixpult v3</h1>
         <p class="hero-p">Systém na odovzdávanie a automatickú formatívnu kontrolu 10 praktických audio cvičení — ku každému cvičeniu je priložený aj podrobný tutoriál a riešenie krok po kroku.</p>
         <div class="hero-pills">
@@ -1353,7 +1353,7 @@ Over prosím, či je komentár a checklist žiaka reálne podložený (obrázkam
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-haiku-4-5-20251001",
-            max_tokens: 600,
+            max_tokens: 1500,
             system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
             messages: [{ role: "user", content: userContent }],
             meta: meta
@@ -1369,7 +1369,7 @@ Over prosím, či je komentár a checklist žiaka reálne podložený (obrázkam
             return;
           }
           if(eb.savedPending) saveStatus = 'pending';
-          throw new Error(`API error: ${r.status}`);
+          throw new Error(`API error: ${r.status} ${eb.error || ''} ${eb.reason || ''}`.trim());
         }
         const d = await r.json();
         const rec = d.record;
@@ -1678,7 +1678,7 @@ Over prosím, či je komentár a checklist žiaka reálne podložený (obrázkam
         const members = rec.members.map(nameOf).map(esc).join(', ');
         const atts = [...rec.attempts].reverse().map(a => `
           <div class="att-row"><span>${esc(a.date)} ${esc(a.time)}</span>
-          <span>${a.pending ? '<em style="color:#BA7517;">čaká na ručné hodnotenie</em>' : `${a.total} % · známka <strong style="color:${GRADE_COLORS[a.grade]};">${a.grade}</strong>`}</span></div>`).join('');
+          <span>${a.pending ? '<em style="color:#BA7517;">čaká na ručné hodnotenie</em>' + (a.err ? ` <span style="color:#A32D2D;font-size:11px;">(${esc(a.err)})</span>` : '') : `${a.total} % · známka <strong style="color:${GRADE_COLORS[a.grade]};">${a.grade}</strong>`}</span></div>`).join('');
         const critHtml = best && best.criteria && typeof best.criteria === 'object' && Object.keys(best.criteria).length
           ? `<div class="crit-grid" style="margin-top:8px;">${Object.entries(best.criteria).map(([k, v]) => `<div class="crit-item"><span class="crit-l">${esc(k)}</span><span class="crit-v">${esc(v)}</span></div>`).join('')}</div>` : '';
         const lastA = rec.attempts[rec.attempts.length - 1];
