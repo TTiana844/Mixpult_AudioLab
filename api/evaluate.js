@@ -63,10 +63,11 @@ async function resolveMeta(meta) {
   };
 }
 
-async function saveAttempt(v, result) {
+async function saveAttempt(v, result, err) {
   const attempt = {
     ...stamp(),
     ckN: v.ckN, ckT: v.ckT, fc: v.fc, comm: v.comm, link: v.link,
+    ...(err ? { err: String(err).slice(0, 160) } : {}),
     ...(Object.keys(v.roles).length ? { roles: v.roles } : {}),
     pending: !result,
     ...(result || {})
@@ -82,20 +83,28 @@ async function saveAttempt(v, result) {
   return attempt;
 }
 
+// Vráti { result } alebo { err } s dôvodom ("truncated" = odpoveď AI sa odrezala na
+// limite max_tokens, "bad_json" = AI nevrátila platný JSON).
 function parseAI(data) {
+  const txt = (data.content || []).map(b => b.text || "").join("").trim();
   try {
-    const txt = (data.content || []).map(b => b.text || "").join("").trim();
-    const p = JSON.parse(txt.replace(/```json|```/g, "").trim());
+    let s = txt.replace(/```json|```/g, "").trim();
+    // AI niekedy pridá vetu pred/za JSON — vezmeme len objekt od prvej { po poslednú }
+    const a = s.indexOf("{"), b = s.lastIndexOf("}");
+    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+    const p = JSON.parse(s);
     return {
-      grade: Math.max(1, Math.min(5, parseInt(p.grade) || 3)),
-      total: Math.max(0, Math.min(100, parseInt(p.total) || 0)),
-      criteria: (p.criteria && typeof p.criteria === "object") ? p.criteria : {},
-      strengths: String(p.strengths || "Práca odovzdaná."),
-      improvements: String(p.improvements || "Doplň komentár."),
-      summary: String(p.summary || "Automatické hodnotenie.")
+      result: {
+        grade: Math.max(1, Math.min(5, parseInt(p.grade) || 3)),
+        total: Math.max(0, Math.min(100, parseInt(p.total) || 0)),
+        criteria: (p.criteria && typeof p.criteria === "object") ? p.criteria : {},
+        strengths: String(p.strengths || "Práca odovzdaná."),
+        improvements: String(p.improvements || "Doplň komentár."),
+        summary: String(p.summary || "Automatické hodnotenie.")
+      }
     };
   } catch {
-    return null;
+    return { err: data.stop_reason === "max_tokens" ? "truncated (max_tokens)" : "bad_json" };
   }
 }
 
@@ -136,9 +145,9 @@ export default async function handler(req, res) {
   }
 
   // Zaznamená odovzdanie bez známky, aby ho učiteľ videl aj keď AI zlyhala.
-  const savePending = async () => {
+  const savePending = async (reason) => {
     if (!v) return false;
-    try { await saveAttempt(v, null); return true; } catch { return false; }
+    try { await saveAttempt(v, null, reason); return true; } catch { return false; }
   };
 
   try {
@@ -167,19 +176,21 @@ export default async function handler(req, res) {
     const data = await anthropicRes.json();
 
     if (!anthropicRes.ok) {
-      const savedPending = await savePending();
+      const msg = data?.error?.message || "Chyba pri volaní Anthropic API.";
+      const savedPending = await savePending(`api ${anthropicRes.status}: ${msg}`);
       res.status(anthropicRes.status).json({
-        error: data?.error?.message || "Chyba pri volaní Anthropic API.",
+        error: msg,
         details: data,
         savedPending
       });
       return;
     }
 
-    const result = parseAI(data);
+    const parsed = parseAI(data);
+    const result = parsed.result;
     if (!result) {
-      const savedPending = await savePending();
-      res.status(502).json({ error: "Odpoveď AI sa nedala spracovať.", savedPending });
+      const savedPending = await savePending(parsed.err);
+      res.status(502).json({ error: "Odpoveď AI sa nedala spracovať.", reason: parsed.err, savedPending });
       return;
     }
 
@@ -198,7 +209,7 @@ export default async function handler(req, res) {
     }
     res.status(200).json({ ...data, saved: true, record: attempt });
   } catch (err) {
-    const savedPending = await savePending();
+    const savedPending = await savePending("network: " + String(err).slice(0, 100));
     res.status(500).json({ error: "Nepodarilo sa spojiť s Anthropic API.", details: String(err), savedPending });
   }
 }
