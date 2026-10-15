@@ -910,7 +910,7 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
                 <div class="shot-req-h"><i class="ti ti-camera"></i>Požiadavky na screenshoty, aby ich AI vedela reálne vyhodnotiť</div>
                 <ul>
                   <li><strong>Formát:</strong> .png, .jpg, .jpeg, .webp alebo .gif — <strong>nie .HEIC</strong> (bežný formát fotiek z iPhonu). Ak fotíš mobilom, over si, že sa uloží ako .jpg (v Nastaveniach iPhonu: Fotoaparát → Formáty → Najkompatibilnejší), alebo screenshot obrazovky priamo z počítača.</li>
-                  <li><strong>Veľkosť:</strong> do 4 MB na obrázok (nad tento limit ho appka AI nepošle, len zaznamená názov súboru).</li>
+                  <li><strong>Veľkosť:</strong> obrázok môže mať aj niekoľko MB — appka ho pred odoslaním sama zmenší (na max. 1600 px), takže text na screenshote zostane čitateľný. Spolu sa dá odoslať cca 3 MB obrázkov (po zmenšení ich vojde aj viac).</li>
                   <li><strong>Ostrosť a čitateľnosť:</strong> žiadne rozmazané fotky obrazovky spod uhla — číselné hodnoty (napr. GAIN, dB, Hz) aj tvary krivky (crossfade, EQ) musia byť jasne čitateľné.</li>
                   <li><strong>Čo má byť vidno pre toto cvičenie:</strong> ${ex.kw.join(', ')}.</li>
                   <li>Radšej celé okno DAW/pultu s popiskami kanálov než tesný výrez len jedného čísla — AI potrebuje kontext, čo presne sa nastavovalo.</li>
@@ -924,7 +924,7 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
               <div class="files-card">
                 <i class="ti ti-cloud-upload files-icon"></i>
                 <div class="files-lbl">Pretiahni súbory sem alebo klikni a vyber</div>
-                <div class="files-sub">Podporované sú formáty .wav, .mp3, .png, .jpg (Max 10 MB na súbor). Obrázky vo formáte .png/.jpg/.jpeg/.webp/.gif do 4 MB si AI naozaj pozrie — .HEIC (bežné pri fotkách z iPhonu) nie je podporovaný, preváž ho prosím na .jpg/.png.</div>
+                <div class="files-sub">Podporované sú formáty .wav, .mp3, .png, .jpg (Max 10 MB na súbor). Obrázky vo formáte .png/.jpg/.jpeg/.webp/.gif (do 25 MB, appka ich zmenší) si AI naozaj pozrie — .HEIC (bežné pri fotkách z iPhonu) nie je podporovaný, preváž ho prosím na .jpg/.png.</div>
                 <div class="files-sub" style="margin-top:4px;color:#BA7517;">Pozor: obsah audio súborov (.wav/.mp3) AI nevie „počuť" — slúžia len ako formálny dôkaz, že súbor existuje. Rozhodujúci je aj konkrétny, vecný komentár nižšie.</div>
                 <input type="file" class="file-input" multiple onchange="handleFiles(this)">
               </div>
@@ -1019,7 +1019,15 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
     // Správa súborov
     // ============================================================
     const SUPPORTED_IMAGE_EXT = ['png','jpg','jpeg','webp','gif'];
-    const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB — nad tým sa obrázok nepošle AI (len sa zapíše meno)
+    const MAX_SOURCE_BYTES = 25 * 1024 * 1024;   // pôvodný súbor; pred odoslaním sa zmenší
+    const KEEP_AS_IS_BYTES = 350 * 1024;         // malé obrázky (do 1600 px) sa neprekódujú
+    const TOTAL_IMAGE_BUDGET = 3000000;          // spolu max. ~3 MB base64 (Vercel: telo požiadavky max 4,5 MB)
+    const PER_IMAGE_MAX = 1500000;               // jeden obrázok max. ~1,5 MB base64
+    // Postupne agresívnejšie zmenšovanie, kým sa obrázok nezmestí do rozpočtu
+    const SHRINK_STEPS = [
+      { side: 1600, q: 0.82 }, { side: 1400, q: 0.74 }, { side: 1200, q: 0.68 },
+      { side: 1000, q: 0.60 }, { side: 800, q: 0.55 }
+    ];
 
     function readFileAsBase64(file) {
       return new Promise((resolve, reject) => {
@@ -1034,6 +1042,54 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
       });
     }
 
+    function loadViaImg(file) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
+        img.src = url;
+      });
+    }
+
+    // Načíta obrázok (s ohľadom na otočenie z EXIF, ak to prehliadač vie)
+    function loadBitmap(file) {
+      if (window.createImageBitmap) {
+        return createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => loadViaImg(file));
+      }
+      return loadViaImg(file);
+    }
+
+    // Vykreslí obrázok zmenšený na max. maxSide px a vráti JPEG ako base64 (bez prefixu)
+    function renderJpeg(bmp, maxSide, quality, makeCanvas) {
+      const w0 = bmp.naturalWidth || bmp.width, h0 = bmp.naturalHeight || bmp.height;
+      const scale = Math.min(1, maxSide / Math.max(w0, h0));
+      const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+      const c = (makeCanvas || (() => document.createElement('canvas')))();
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';            // priehľadné PNG -> biele pozadie (JPEG priehľadnosť nemá)
+      ctx.fillRect(0, 0, w, h);
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bmp, 0, 0, w, h);
+      const url = c.toDataURL('image/jpeg', quality);
+      return url.includes(',') ? url.split(',')[1] : '';
+    }
+
+    // Vyberie prvé nastavenie, ktoré sa zmestí do budgetChars; null = nezmestí sa ani najmenšie
+    function pickShrink(bmp, budgetChars, render) {
+      for (const st of SHRINK_STEPS) {
+        const b64 = (render || renderJpeg)(bmp, st.side, st.q);
+        if (b64 && b64.length <= budgetChars) return b64;
+      }
+      return null;
+    }
+
+    function mimeFor(file, ext) {
+      if (file.type) return file.type;
+      return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+    }
+
     async function handleFiles(input) {
       if(!input.files.length) return;
       const incoming = Array.from(input.files);
@@ -1045,19 +1101,40 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
         const isSupportedImg = SUPPORTED_IMAGE_EXT.includes(ext);
         const isHeic = ext === 'heic' || ext === 'heif';
 
-        if(isSupportedImg && f.size <= MAX_IMAGE_BYTES) {
+        if(isSupportedImg && f.size <= MAX_SOURCE_BYTES) {
+          let bmp = null;
           try {
-            const base64 = await readFileAsBase64(f);
-            const mime = f.type || (ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
-            state.files.push({ name: f.name, size: sizeStr, kind: 'image', mime, base64 });
+            const used = state.files.reduce((n, x) => n + (x.base64 ? x.base64.length : 0), 0);
+            const budget = Math.min(PER_IMAGE_MAX, TOTAL_IMAGE_BUDGET - used);
+            bmp = await loadBitmap(f);
+            const maxDim = Math.max(bmp.naturalWidth || bmp.width, bmp.naturalHeight || bmp.height);
+
+            let base64 = null, mime = 'image/jpeg', shrunk = false;
+            if (f.size <= KEEP_AS_IS_BYTES && maxDim <= SHRINK_STEPS[0].side) {
+              const orig = await readFileAsBase64(f);
+              if (orig.length <= budget) { base64 = orig; mime = mimeFor(f, ext); }
+            }
+            if (!base64) {
+              base64 = budget > 0 ? pickShrink(bmp, budget) : null;
+              shrunk = !!base64;
+            }
+            if (base64) {
+              state.files.push({ name: f.name, size: sizeStr, kind: 'image', mime, base64,
+                sentKb: Math.round(base64.length * 0.75 / 1024), shrunk });
+            } else {
+              state.files.push({ name: f.name, size: sizeStr, kind: 'image-over-limit' });
+            }
           } catch(e) {
+            console.warn('Obrázok sa nepodarilo spracovať:', f.name, e);
             state.files.push({ name: f.name, size: sizeStr, kind: 'unreadable' });
+          } finally {
+            if (bmp && bmp.close) bmp.close();
           }
         } else if(isHeic) {
           // HEIC nevie prehliadač spoľahlivo prečítať a Claude API ho nepodporuje — obsahovo neoverené
           state.files.push({ name: f.name, size: sizeStr, kind: 'heic-unsupported' });
         } else if(isSupportedImg) {
-          // podporovaný formát obrázku, ale príliš veľký súbor
+          // podporovaný formát obrázku, ale nezmyselne veľký súbor (nad 25 MB)
           state.files.push({ name: f.name, size: sizeStr, kind: 'image-too-large' });
         } else {
           // audio (.wav/.mp3) a iné — appka nevie prehrať/analyzovať obsah
@@ -1069,9 +1146,12 @@ IMG["10"] = {img: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCA
 
     function fileKindLabel(k) {
       switch(k.kind) {
-        case 'image': return 'obrázok — AI ho reálne uvidí';
+        case 'image': return k.shrunk
+          ? `obrázok — AI ho reálne uvidí (zmenšený na ${k.sentKb} KB)`
+          : 'obrázok — AI ho reálne uvidí';
         case 'heic-unsupported': return 'HEIC nie je podporovaný — prekonvertuj na JPG/PNG';
-        case 'image-too-large': return 'obrázok je príliš veľký na analýzu';
+        case 'image-over-limit': return 'priložených obrázkov je spolu príliš veľa na odoslanie — odstráň niektorý a pridaj tento znova';
+        case 'image-too-large': return 'obrázok má nad 25 MB — zmenši ho alebo urob nový screenshot';
         case 'unreadable': return 'súbor sa nepodarilo načítať';
         default: return 'audio/iný súbor — obsah sa neanalyzuje, len sa zaznamená názov';
       }
